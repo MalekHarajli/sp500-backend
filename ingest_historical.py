@@ -1,83 +1,94 @@
 import datetime
+import time
+import pytz
 from polygon_client import PolygonClient
 from supabase_client import SupabaseClient
-from time import sleep
 
-# timeframes mapped to db table name + polygon params
-TIMEFRAMES = {
-    "1m":  ("prices_1m", 1,  "minute"),
-    "5m":  ("prices_5m", 5,  "minute"),
-    "15m": ("prices_15m", 15, "minute"),
-    "1h":  ("prices_1h", 1,  "hour"),
-    "4h":  ("prices_4h", 4,  "hour"),
-    "1d":  ("prices_1d", 1,  "day"),
-}
-
-# how many years back we fetch
+# Historical range: last 5 years from today
 YEARS_BACK = 5
+MAX_DAYS_PER_REQUEST = 30   # Polygon allows date ranges, so chunking reduces # of calls
 
 
-def ingest_historical():
-    print("🚀 Starting historical OHLCV ingestion...\n")
+def daterange(start_date, end_date, step_days):
+    while start_date < end_date:
+        chunk_end = min(start_date + datetime.timedelta(days=step_days), end_date)
+        yield start_date, chunk_end
+        start_date = chunk_end
 
+
+def run_historical():
+    print("🚀 Starting Historical Ingestion...")
     db = SupabaseClient()
     polygon = PolygonClient()
 
-    # Fetch ticker list from DB
-    tickers = db.fetch_companies()
-    print(f"📈 Loaded {len(tickers)} tickers.")
+    # Get ticker list
+    tickers = [row["symbol"] for row in db.fetch_companies()]
+    print(f"📈 Found {len(tickers)} tickers to ingest")
 
-    end_date = datetime.datetime.utcnow().date()
-    start_date = end_date - datetime.timedelta(days=365 * YEARS_BACK)
+    utc = pytz.UTC
+    eastern = pytz.timezone("US/Eastern")
+    end_date = datetime.datetime.now(utc)
+    start_date = end_date - datetime.timedelta(days=YEARS_BACK * 365)
 
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
+    for symbol in tickers:
+        print(f"\n============================")
+        print(f"📊 Processing: {symbol}")
+        print(f"============================")
 
-    for timeframe, (table, multiplier, granularity) in TIMEFRAMES.items():
-        print(f"\n========== ⏱ {timeframe} candles → {table} ==========")
+        # 1️⃣ Read checkpoint
+        checkpoint = db.get_checkpoint(symbol)
+        if checkpoint:
+            print(f"⏩ Resuming from checkpoint: {checkpoint}")
+            start = checkpoint
+        else:
+            print("🔰 No checkpoint found — starting from 5-year baseline")
+            start = start_date
 
-        for symbol in tickers:
-            symbol = symbol["symbol"]
-            try:
-                print(f"📥 Fetching {symbol} ({timeframe})")
+        # 2️⃣ Loop in chunks
+        for chunk_start, chunk_end in daterange(start, end_date, MAX_DAYS_PER_REQUEST):
+            print(f"  ⏳ Fetching {chunk_start.date()} → {chunk_end.date()}")
 
-                data = polygon.get_agg(
-                    symbol=symbol,
-                    multiplier=multiplier,
-                    timespan=granularity,
-                    start=start_str,
-                    end=end_str
-                )
+            data = polygon.get_agg(
+                symbol=symbol,
+                multiplier=1,
+                timespan="minute",
+                start=chunk_start.strftime("%Y-%m-%d"),
+                end=chunk_end.strftime("%Y-%m-%d")
+            )
 
-                results = data.get("results", [])
-                if not results:
-                    print(f"⚠ No results for {symbol}")
-                    continue
-
-                rows_to_insert = []
-                for candle in results:
-                    rows_to_insert.append({
-                        "symbol": symbol,
-                        "ts": datetime.datetime.utcfromtimestamp(candle["t"] / 1000.0).isoformat(),
-                        "open": candle["o"],
-                        "high": candle["h"],
-                        "low": candle["l"],
-                        "close": candle["c"],
-                        "volume": candle.get("v")
-                    })
-
-                db.bulk_insert(table, rows_to_insert)
-                print(f"✔ {symbol} -> inserted {len(rows_to_insert)} rows")
-
-                sleep(0.3)  # rate limit protection
-
-            except Exception as e:
-                print(f"❌ Error on {symbol}: {e}")
+            results = data.get("results", [])
+            if not results:
+                print("  ⚠ No data found — continuing...")
                 continue
 
+            rows = []
+            for r in results:
+                ts = datetime.datetime.fromtimestamp(r["t"] / 1000, utc).astimezone(eastern)
+
+                rows.append({
+                    "symbol": symbol,
+                    "ts": ts,
+                    "open": r.get("o"),
+                    "high": r.get("h"),
+                    "low": r.get("l"),
+                    "close": r.get("c"),
+                    "volume": r.get("v", 0),
+                    "trade_count": r.get("n", 0),
+                    "vwap": r.get("vw")
+                })
+
+            db.bulk_insert("minute_ohlcv", rows)
+
+            # Update checkpoint
+            db.update_checkpoint(symbol, chunk_end)
+
+            print(f"  ✅ Inserted {len(rows)} rows")
+            time.sleep(1.2)  # rate limit safety
+
+    db.close()
     print("\n🎉 Historical ingestion complete!")
-
-
+            
 
 if __name__ == "__main__":
-    ingest_historical()
+    run_historical()
+
