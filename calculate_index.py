@@ -1,26 +1,29 @@
-from supabase_client import SupabaseClient
-from datetime import datetime
-
-db = SupabaseClient()
+from supabase_client import get_connection
 
 def compute_index():
-    rows = db.get_weights()  # returns: [(symbol, weight), ...]
+    conn = get_connection()
+    cur = conn.cursor()
 
-    if not rows:
-        return
-    
-    index_value = 0.0
+    cur.execute("""
+        SELECT w.symbol, w.weight, p.price
+        FROM sp500_weights w
+        JOIN LATERAL (
+            SELECT price FROM second_prices
+            WHERE symbol = w.symbol
+            ORDER BY ts DESC
+            LIMIT 1
+        ) p ON TRUE;
+    """)
 
-    with db.conn.cursor() as cur:
-        for symbol, weight in rows:
-            cur.execute("""
-                SELECT price FROM public.second_prices
-                WHERE symbol = %s
-                ORDER BY ts DESC
-                LIMIT 1
-            """, (symbol,))
-            result = cur.fetchone()
-            if result and result[0] is not None:
-                index_value += float(weight) * float(result[0])
+    rows = cur.fetchall()
+    index_value = sum(weight * price for (_, weight, price) in rows)
 
-    db.insert_index_value(datetime.utcnow(), index_value)
+    cur.execute("""
+        INSERT INTO sp500_index_values (ts, index_value)
+        VALUES (NOW(), %s)
+        ON CONFLICT (ts) DO NOTHING;
+    """, (index_value,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
