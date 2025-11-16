@@ -1,7 +1,8 @@
-from supabase_client import get_connection
+from supabase_client import SupabaseClient
 
 def compute_contributions():
-    conn = get_connection()
+    db = SupabaseClient()
+    conn = db.get_conn()
     cur = conn.cursor()
 
     cur.execute("""
@@ -17,8 +18,8 @@ def compute_contributions():
     """)
 
     rows = cur.fetchall()
-
     contributions = []
+
     for i in range(0, len(rows), 2):
         symbol, weight, current = rows[i]
         _, _, previous = rows[i+1] if i+1 < len(rows) else (None, None, current)
@@ -31,9 +32,9 @@ def compute_contributions():
 
     cur.executemany("""
         INSERT INTO contributions_live (ts, symbol, contribution_pct)
-        VALUES (NOW(), %s, %s);
+        VALUES (NOW(), %s, %s)
     """, insert_rows)
 
     conn.commit()
     cur.close()
-    conn.close()
+    db.close()
