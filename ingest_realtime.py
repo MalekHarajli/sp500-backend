@@ -1,27 +1,32 @@
 import time
-from polygon_client import get_all_snapshots
+from polygon_client import PolygonClient
 from supabase_client import insert_many
 from calculate_index import compute_index
 from calculate_contributions import compute_contributions
 
+polygon = PolygonClient()
+
 def run_realtime():
     while True:
-        data = get_all_snapshots()
-        results = data.get("tickers", [])
+        data = polygon.get_all_snapshots()
+        results = data if isinstance(data, list) else data.get("tickers", [])
 
         rows = []
-        now = None
 
         for t in results:
-            sym = t["ticker"]
-            if "lastTrade" not in t:
+            sym = t.get("ticker")
+            last_trade = t.get("lastTrade")
+            if not last_trade:
                 continue
 
-            price = t["lastTrade"]["p"]
-            ts = t["lastTrade"]["t"] / 1000 / 1000  # convert micros → seconds
+            price = last_trade.get("p")
+            ts_micro = last_trade.get("t")
+
+            if price is None or ts_micro is None:
+                continue
 
             import datetime
-            dt = datetime.datetime.utcfromtimestamp(ts)
+            dt = datetime.datetime.utcfromtimestamp(ts_micro / 1_000_000)
 
             rows.append((sym, dt, price, None))
 
