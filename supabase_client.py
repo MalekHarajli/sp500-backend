@@ -1,36 +1,52 @@
+# supabase_client.py
+
+import os
 import psycopg2
 import psycopg2.extras
 from supabase import create_client, Client
 from config import DATABASE_URL
-import os
 
 
 class SupabaseClient:
+    """
+    Hybrid DB access layer:
+      - Direct Postgres (psycopg2) for high-frequency ingestion (fast, safe, bulk)
+      - Supabase REST client for future authenticated UI / API usage
+    """
 
     def __init__(self) -> None:
-        # ---- Supabase REST client ----
-        self.supabase: Client = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_ANON_KEY")
-        )
+        # ---- Validate required env ----
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_ANON_KEY")
 
-        # ---- Direct Postgres connection (fast) ----
+        if not DATABASE_URL:
+            raise ValueError("❌ DATABASE_URL missing. Check Render & local .env")
+
+        # ---- Init optional Supabase REST client ----
+        self.supabase: Client | None = None
+        if supabase_url and supabase_key:
+            self.supabase = create_client(supabase_url, supabase_key)
+
+        # ---- Direct Postgres connection ----
         self.conn = psycopg2.connect(DATABASE_URL)
         self.conn.autocommit = True
         self.cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+        print("🚀 SupabaseClient initialized (Hybrid Mode Active)")
 
-    # ======================================================
-    # Fetch list of S&P 500 tickers
-    # ======================================================
-    def fetch_companies(self):
+
+    # ================================
+    # Fetch ticker list (S&P 500)
+    # ================================
+    def fetch_companies(self) -> list[str]:
         self.cur.execute("SELECT symbol FROM companies ORDER BY symbol ASC;")
-        return self.cur.fetchall()
+        rows = self.cur.fetchall()
+        return [row["symbol"] for row in rows]
 
 
-    # ======================================================
-    # Insert or update (upsert) a single OHLC row
-    # ======================================================
+    # ================================
+    # Insert 1 row (live ingestion)
+    # ================================
     def insert_candle(self, table: str, row: dict):
         sql = f"""
             INSERT INTO {table} (symbol, ts, open, high, low, close, volume)
@@ -45,10 +61,10 @@ class SupabaseClient:
         self.cur.execute(sql, row)
 
 
-    # ======================================================
-    # Fast bulk upsert for historical ingestion
-    # ======================================================
-    def bulk_insert(self, table: str, rows: list):
+    # ================================
+    # Bulk insert for historical data
+    # ================================
+    def bulk_insert(self, table: str, rows: list[dict]):
         if not rows:
             return
 
@@ -67,14 +83,17 @@ class SupabaseClient:
             psycopg2.extras.execute_batch(self.cur, sql, rows, page_size=500)
         except Exception as e:
             print(f"❌ Bulk insert failed for {table}: {e}")
+        else:
+            print(f"✔ Inserted/updated {len(rows)} rows in {table}")
 
 
-    # ======================================================
-    # Close DB connection
-    # ======================================================
+    # ================================
+    # Close connection safely
+    # ================================
     def close(self):
         try:
             self.cur.close()
             self.conn.close()
         except:
             pass
+
