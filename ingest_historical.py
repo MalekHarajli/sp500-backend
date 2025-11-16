@@ -62,11 +62,13 @@ def fetch_and_store(symbol: str, db: SupabaseClient, polygon: PolygonClient):
             rows.append({
                 "symbol": symbol,
                 "ts": ts,
-                "open": candle.get("o"),
-                "high": candle.get("h"),
-                "low": candle.get("l"),
-                "close": candle.get("c"),
-                "volume": candle.get("v", 0)
+                "open": candle["o"],
+                "high": candle["h"],
+                "low": candle["l"],
+                "close": candle["c"],
+                "volume": candle.get("v"),
+                "trade_count": candle.get("n"),  # may be None depending on plan
+                "vwap": candle.get("vw")         # may be None depending on plan
             })
 
         db.bulk_insert("minute_ohlcv", rows)
@@ -95,4 +97,5 @@ def run_ingestion():
 
 if __name__ == "__main__":
     run_ingestion()
+
 
