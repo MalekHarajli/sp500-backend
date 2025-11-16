@@ -1,28 +1,36 @@
 import os
 import psycopg2
 import psycopg2.extras
+from supabase import create_client, Client
 from config import DATABASE_URL
 
 
 class SupabaseClient:
 
     def __init__(self) -> None:
-        # Fast Postgres connection for ingestion & reads
+        # ---- Supabase REST client (optional, not used for ingestion speed) ----
+        self.supabase: Client = create_client(
+            os.getenv("SUPABASE_URL", ""),
+            os.getenv("SUPABASE_ANON_KEY", "")
+        )
+
+        # ---- Direct Postgres connection (fast ingestion) ----
         self.conn = psycopg2.connect(DATABASE_URL)
         self.conn.autocommit = True
         self.cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # ------------------------------------------------------
-    # Fetch list of S&P 500 tickers from companies table
-    # ------------------------------------------------------
+
+    # ======================================================
+    # Fetch list of S&P 500 tickers
+    # ======================================================
     def fetch_companies(self):
         self.cur.execute("SELECT symbol FROM companies ORDER BY symbol ASC;")
         return self.cur.fetchall()
 
-    # ------------------------------------------------------
-    # Insert or update single OHLCV candle record
-    # (Used for live updates)
-    # ------------------------------------------------------
+
+    # ======================================================
+    # Insert or update (upsert) a single OHLCV row
+    # ======================================================
     def insert_candle(self, table: str, row: dict):
         sql = f"""
             INSERT INTO {table} (symbol, ts, open, high, low, close, volume, trade_count, vwap)
@@ -38,10 +46,12 @@ class SupabaseClient:
         """
         self.cur.execute(sql, row)
 
-    # ------------------------------------------------------
-    # BULK UPSERT for historical ingestion
-    # ------------------------------------------------------
-        def bulk_insert(self, table: str, rows: list):
+
+    # ======================================================
+    # FAST bulk upsert for historical ingestion
+    # ======================================================
+    def bulk_insert(self, table: str, rows: list):
+
         if not rows:
             return
 
@@ -64,31 +74,12 @@ class SupabaseClient:
             print(f"❌ Bulk insert failed for {table}: {e}")
 
 
-    # ------------------------------------------------------
-    # CHECKPOINT: read last processed timestamp per symbol
-    # ------------------------------------------------------
-    def get_checkpoint(self, symbol: str):
-        self.cur.execute("SELECT last_ts FROM ingest_checkpoints WHERE symbol = %s", (symbol,))
-        row = self.cur.fetchone()
-        return row["last_ts"] if row else None
-
-    # ------------------------------------------------------
-    # CHECKPOINT: update timestamp
-    # ------------------------------------------------------
-    def update_checkpoint(self, symbol: str, ts):
-        self.cur.execute("""
-            INSERT INTO ingest_checkpoints (symbol, last_ts)
-            VALUES (%s, %s)
-            ON CONFLICT (symbol) DO UPDATE SET last_ts = EXCLUDED.last_ts
-        """, (symbol, ts))
-
-    # ------------------------------------------------------
-    # Close DB connection safely
-    # ------------------------------------------------------
+    # ======================================================
+    # Close DB connection
+    # ======================================================
     def close(self):
         try:
             self.cur.close()
             self.conn.close()
-        except:
+        except Exception:
             pass
-
