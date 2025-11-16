@@ -41,7 +41,7 @@ class SupabaseClient:
     # ------------------------------------------------------
     # BULK UPSERT for historical ingestion
     # ------------------------------------------------------
-    def bulk_insert(self, table: str, rows: list):
+        def bulk_insert(self, table: str, rows: list):
         if not rows:
             return
 
@@ -62,6 +62,7 @@ class SupabaseClient:
             psycopg2.extras.execute_batch(self.cur, sql, rows, page_size=500)
         except Exception as e:
             print(f"❌ Bulk insert failed for {table}: {e}")
+
 
     # ------------------------------------------------------
     # CHECKPOINT: read last processed timestamp per symbol
