@@ -1,70 +1,65 @@
 import time
+import datetime
 from polygon_client import PolygonClient
 from supabase_client import SupabaseClient
 from calculate_index import compute_index
 from calculate_contributions import compute_contributions
 
 polygon = PolygonClient()
+db = SupabaseClient()
 
 def run_realtime():
-    print("🔥 Realtime ingestion started...")
+    print("🔥 15-Minute Delayed S&P500 Feed Started (1-minute refresh)")
+    last_timestamp = None
 
     while True:
-        try:
-            print("⏳ Fetching snapshot data...")
-            data = polygon.get_all_snapshots()
+        # Fetch current date (Polygon requires YYYY-MM-DD)
+        today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 
-            # Debug print
-            print(f"📊 Snapshot response type: {type(data)}")
+        print(f"\n⏳ Fetching grouped aggregates for {today_str} ...")
+        data = polygon.get_grouped_aggregates(today_str)
 
-            results = data.get("tickers", []) if isinstance(data, dict) else []
-            print(f"📈 Tickers received: {len(results)}")
+        if not isinstance(data, dict) or "results" not in data:
+            print("⚠ No results found, sleeping for 60s...")
+            time.sleep(60)
+            continue
 
-            if len(results) == 0:
-                print("⚠ No data returned from Polygon, retrying in 3 seconds...")
-                time.sleep(3)
+        results = data["results"]
+        print(f"📈 Received {len(results)} tickers")
+
+        rows = []
+
+        for row in results:
+            symbol = row.get("T")
+            price = row.get("c")
+            ts_ms = row.get("t")  # ms timestamp
+
+            if not symbol or price is None or ts_ms is None:
                 continue
 
-            db = SupabaseClient()
-            rows = []
+            ts = datetime.datetime.utcfromtimestamp(ts_ms / 1000)
 
-            for t in results:
-                sym = t.get("ticker")
-                last_trade = t.get("lastTrade")
+            # Avoid inserting duplicates
+            if last_timestamp and ts <= last_timestamp:
+                continue
 
-                if not last_trade:
-                    continue
+            rows.append((symbol, ts, price, row.get("v")))
 
-                price = last_trade.get("p")
-                ts_micro = last_trade.get("t")
+        if rows:
+            print(f"💾 Inserting {len(rows)} new price rows")
+            db.insert_second_prices(rows)
 
-                if price is None or ts_micro is None:
-                    continue
+            print("📐 Updating S&P500 index value...")
+            compute_index()
 
-                import datetime
-                dt = datetime.datetime.utcfromtimestamp(ts_micro / 1_000_000)
+            print("📊 Updating contribution breakdown...")
+            compute_contributions()
 
-                rows.append((sym, dt, price, None))
+            last_timestamp = rows[-1][1]
+        else:
+            print("ℹ No new rows detected (waiting for next minute)")
 
-            if rows:
-                print(f"📝 Inserting {len(rows)} rows into second_prices...")
-                db.insert_second_prices(rows)
-
-                print("🧮 Computing index...")
-                compute_index()
-
-                print("📊 Computing contributions...")
-                compute_contributions()
-
-                print("✅ Cycle complete.")
-            else:
-                print("⚠ No valid rows produced from snapshot.")
-
-            time.sleep(1)
-
-        except Exception as e:
-            print(f"❌ ERROR: {e}")
-            time.sleep(3)
+        time.sleep(60)
 
 if __name__ == "__main__":
     run_realtime()
