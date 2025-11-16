@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from polygon_client import PolygonClient
 from supabase_client import SupabaseClient
 from calculate_index import compute_index
@@ -9,32 +10,28 @@ db = SupabaseClient()
 
 def run_realtime():
     while True:
-        # Fetch snapshot data
         data = polygon.get_all_snapshots()
-        results = data.get("tickers", []) if isinstance(data, dict) else []
+        tickers = data.get("tickers", []) if isinstance(data, dict) else []
 
         rows = []
 
-        for t in results:
+        for t in tickers:
             sym = t.get("ticker")
-            last_trade = t.get("lastTrade")
-            if not last_trade:
+            trade = t.get("lastTrade")
+            if not trade:
                 continue
 
-            price = last_trade.get("p")
-            ts_micro = last_trade.get("t")
+            price = trade.get("p")
+            ts_micro = trade.get("t")
 
-            if price is None or ts_micro is None:
+            if not price or not ts_micro:
                 continue
 
-            import datetime
-            dt = datetime.datetime.utcfromtimestamp(ts_micro / 1_000_000)
-
+            dt = datetime.utcfromtimestamp(ts_micro / 1_000_000)
             rows.append((sym, dt, price, None))
 
         if rows:
             db.insert_second_prices(rows)
-
             compute_index()
             compute_contributions()
 
