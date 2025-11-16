@@ -1,7 +1,8 @@
-from supabase_client import get_connection
+from supabase_client import SupabaseClient
 
 def compute_index():
-    conn = get_connection()
+    db = SupabaseClient()
+    conn = db.get_conn()
     cur = conn.cursor()
 
     cur.execute("""
@@ -21,9 +22,9 @@ def compute_index():
     cur.execute("""
         INSERT INTO sp500_index_values (ts, index_value)
         VALUES (NOW(), %s)
-        ON CONFLICT (ts) DO NOTHING;
+        ON CONFLICT (ts) DO UPDATE SET index_value = EXCLUDED.index_value;
     """, (index_value,))
 
     conn.commit()
     cur.close()
-    conn.close()
+    db.close()
