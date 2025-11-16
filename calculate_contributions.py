@@ -1,33 +1,39 @@
-from supabase_client import SupabaseClient
-from datetime import datetime
-
-db = SupabaseClient()
+from supabase_client import get_connection
 
 def compute_contributions():
-    weights = dict(db.get_weights())  # {symbol: weight}
+    conn = get_connection()
+    cur = conn.cursor()
 
-    rows = []
-    with db.conn.cursor() as cur:
-        cur.execute("""
-            SELECT symbol, price
-            FROM public.second_prices
-            WHERE ts IN (
-                SELECT DISTINCT ts FROM public.second_prices ORDER BY ts DESC LIMIT 2
-            )
-            ORDER BY symbol, ts DESC
-        """)
-        rows = cur.fetchall()
+    cur.execute("""
+        SELECT w.symbol, w.weight, p.price
+        FROM sp500_weights w
+        JOIN LATERAL (
+            SELECT price FROM second_prices
+            WHERE symbol = w.symbol
+            ORDER BY ts DESC
+            LIMIT 2
+        ) p ON TRUE
+        ORDER BY w.symbol, p.price DESC;
+    """)
 
-    # Build map: {symbol: [currentPrice, prevPrice]}
-    price_map = {}
-    for symbol, price in rows:
-        price_map.setdefault(symbol, []).append(price)
+    rows = cur.fetchall()
 
     contributions = []
-    for symbol, price_list in price_map.items():
-        if len(price_list) == 2 and symbol in weights:
-            delta = float(price_list[0]) - float(price_list[1])
-            contributions.append((datetime.utcnow(), symbol, float(weights[symbol]) * delta))
+    for i in range(0, len(rows), 2):
+        symbol, weight, current = rows[i]
+        _, _, previous = rows[i+1] if i+1 < len(rows) else (None, None, current)
 
-    if contributions:
-        db.insert_contributions(contributions)
+        delta = current - previous
+        contribution = weight * delta
+        contributions.append((symbol, contribution))
+
+    insert_rows = [(symbol, contribution) for symbol, contribution in contributions]
+
+    cur.executemany("""
+        INSERT INTO contributions_live (ts, symbol, contribution_pct)
+        VALUES (NOW(), %s, %s);
+    """, insert_rows)
+
+    conn.commit()
+    cur.close()
+    conn.close()
