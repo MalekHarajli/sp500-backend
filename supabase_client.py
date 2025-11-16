@@ -1,41 +1,80 @@
 import psycopg2
-from psycopg2.extras import execute_values
+import psycopg2.extras
+from supabase import create_client, Client
 from config import DATABASE_URL
+import os
+
 
 class SupabaseClient:
 
-    def __init__(self):
+    def __init__(self) -> None:
+        # ---- Supabase REST client ----
+        self.supabase: Client = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_ANON_KEY")
+        )
+
+        # ---- Direct Postgres connection (fast) ----
         self.conn = psycopg2.connect(DATABASE_URL)
         self.conn.autocommit = True
+        self.cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    def get_conn(self):
-        return self.conn
 
-    def insert_second_prices(self, rows):
-        with self.conn.cursor() as cur:
-            query = """
-                INSERT INTO second_prices (symbol, ts, price, volume)
-                VALUES %s
-                ON CONFLICT (symbol, ts) DO NOTHING
-            """
-            execute_values(cur, query, rows)
+    # ======================================================
+    # Fetch list of S&P 500 tickers
+    # ======================================================
+    def fetch_companies(self):
+        self.cur.execute("SELECT symbol FROM companies ORDER BY symbol ASC;")
+        return self.cur.fetchall()
 
-    def insert_index_value(self, ts, value):
-        with self.conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO sp500_index_values (ts, index_value)
-                VALUES (%s, %s)
-                ON CONFLICT (ts) DO UPDATE SET index_value = EXCLUDED.index_value
-            """, (ts, value))
 
-    def insert_contributions(self, rows):
-        with self.conn.cursor() as cur:
-            query = """
-                INSERT INTO contributions_live (ts, symbol, contribution_pct)
-                VALUES %s
-                ON CONFLICT DO NOTHING
-            """
-            execute_values(cur, query, rows)
+    # ======================================================
+    # Insert or update (upsert) a single OHLC row
+    # ======================================================
+    def insert_candle(self, table: str, row: dict):
+        sql = f"""
+            INSERT INTO {table} (symbol, ts, open, high, low, close, volume)
+            VALUES (%(symbol)s, %(ts)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s)
+            ON CONFLICT (symbol, ts) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume;
+        """
+        self.cur.execute(sql, row)
 
+
+    # ======================================================
+    # Fast bulk upsert for historical ingestion
+    # ======================================================
+    def bulk_insert(self, table: str, rows: list):
+        if not rows:
+            return
+
+        sql = f"""
+            INSERT INTO {table} (symbol, ts, open, high, low, close, volume)
+            VALUES (%(symbol)s, %(ts)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s)
+            ON CONFLICT (symbol, ts) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume;
+        """
+
+        try:
+            psycopg2.extras.execute_batch(self.cur, sql, rows, page_size=500)
+        except Exception as e:
+            print(f"❌ Bulk insert failed for {table}: {e}")
+
+
+    # ======================================================
+    # Close DB connection
+    # ======================================================
     def close(self):
-        self.conn.close()
+        try:
+            self.cur.close()
+            self.conn.close()
+        except:
+            pass
