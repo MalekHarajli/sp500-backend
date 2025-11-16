@@ -1,94 +1,98 @@
+"""
+Historical OHLCV Ingestion (5 Years, 1-Minute, All S&P500 Stocks)
+Batching Mode: Year-by-Year (selected by user)
+
+Requires:
+- minute_ohlcv table
+- SupabaseClient() class with bulk_insert()
+
+Run once on Render or locally, then disable.
+"""
+
 import datetime
 import time
-import pytz
 from polygon_client import PolygonClient
 from supabase_client import SupabaseClient
 
-# Historical range: last 5 years from today
+
+# Number of years to pull
 YEARS_BACK = 5
-MAX_DAYS_PER_REQUEST = 30   # Polygon allows date ranges, so chunking reduces # of calls
+
+# Polygon 1-minute limit count per call
+MULTIPLIER = 1
+TIMESPAN = "minute"
 
 
-def daterange(start_date, end_date, step_days):
-    while start_date < end_date:
-        chunk_end = min(start_date + datetime.timedelta(days=step_days), end_date)
-        yield start_date, chunk_end
-        start_date = chunk_end
+def generate_year_ranges():
+    """Create YYYY-01-01 → YYYY-12-31 ranges for past N years."""
+    current_year = datetime.datetime.utcnow().year
+    ranges = []
+    for i in range(YEARS_BACK):
+        y = current_year - i - 1
+        start = f"{y}-01-01"
+        end = f"{y}-12-31"
+        ranges.append((start, end))
+    return ranges
 
 
-def run_historical():
-    print("🚀 Starting Historical Ingestion...")
-    db = SupabaseClient()
+def fetch_and_store(symbol: str, db: SupabaseClient, polygon: PolygonClient):
+    """Ingest full OHLCV for a ticker year-by-year."""
+    print(f"\n📡 Fetching: {symbol}")
+
+    year_ranges = generate_year_ranges()
+
+    for start, end in year_ranges:
+        print(f"   ⏳ {symbol}: {start} → {end}")
+
+        try:
+            data = polygon.get_agg(symbol, MULTIPLIER, TIMESPAN, start, end)
+        except Exception as e:
+            print(f"   ❌ Polygon fetch failed: {symbol} [{start} → {end}] | {e}")
+            continue
+
+        results = data.get("results", [])
+        if not results:
+            print(f"   ⚠ No data returned for this range.")
+            continue
+
+        rows = []
+        for candle in results:
+            ts = datetime.datetime.utcfromtimestamp(candle["t"] / 1000)
+
+            rows.append({
+                "symbol": symbol,
+                "ts": ts,
+                "open": candle.get("o"),
+                "high": candle.get("h"),
+                "low": candle.get("l"),
+                "close": candle.get("c"),
+                "volume": candle.get("v", 0)
+            })
+
+        db.bulk_insert("minute_ohlcv", rows)
+        print(f"   ✅ Inserted {len(rows):,} rows")
+
+        # Delay to protect against rate limits
+        time.sleep(0.6)
+
+
+def run_ingestion():
+    print("\n🚀 Starting 1-Minute Historical Ingestion (5-Year, Year-by-Year Mode)")
     polygon = PolygonClient()
+    db = SupabaseClient()
 
-    # Get ticker list
-    tickers = [row["symbol"] for row in db.fetch_companies()]
-    print(f"📈 Found {len(tickers)} tickers to ingest")
+    tickers = db.fetch_companies()
+    tickers = [t["symbol"] for t in tickers]
 
-    utc = pytz.UTC
-    eastern = pytz.timezone("US/Eastern")
-    end_date = datetime.datetime.now(utc)
-    start_date = end_date - datetime.timedelta(days=YEARS_BACK * 365)
+    print(f"📈 Tickers loaded: {len(tickers)}")
 
     for symbol in tickers:
-        print(f"\n============================")
-        print(f"📊 Processing: {symbol}")
-        print(f"============================")
-
-        # 1️⃣ Read checkpoint
-        checkpoint = db.get_checkpoint(symbol)
-        if checkpoint:
-            print(f"⏩ Resuming from checkpoint: {checkpoint}")
-            start = checkpoint
-        else:
-            print("🔰 No checkpoint found — starting from 5-year baseline")
-            start = start_date
-
-        # 2️⃣ Loop in chunks
-        for chunk_start, chunk_end in daterange(start, end_date, MAX_DAYS_PER_REQUEST):
-            print(f"  ⏳ Fetching {chunk_start.date()} → {chunk_end.date()}")
-
-            data = polygon.get_agg(
-                symbol=symbol,
-                multiplier=1,
-                timespan="minute",
-                start=chunk_start.strftime("%Y-%m-%d"),
-                end=chunk_end.strftime("%Y-%m-%d")
-            )
-
-            results = data.get("results", [])
-            if not results:
-                print("  ⚠ No data found — continuing...")
-                continue
-
-            rows = []
-            for r in results:
-                ts = datetime.datetime.fromtimestamp(r["t"] / 1000, utc).astimezone(eastern)
-
-                rows.append({
-                    "symbol": symbol,
-                    "ts": ts,
-                    "open": r.get("o"),
-                    "high": r.get("h"),
-                    "low": r.get("l"),
-                    "close": r.get("c"),
-                    "volume": r.get("v", 0),
-                    "trade_count": r.get("n", 0),
-                    "vwap": r.get("vw")
-                })
-
-            db.bulk_insert("minute_ohlcv", rows)
-
-            # Update checkpoint
-            db.update_checkpoint(symbol, chunk_end)
-
-            print(f"  ✅ Inserted {len(rows)} rows")
-            time.sleep(1.2)  # rate limit safety
+        fetch_and_store(symbol, db, polygon)
 
     db.close()
     print("\n🎉 Historical ingestion complete!")
-            
+
 
 if __name__ == "__main__":
-    run_historical()
+    run_ingestion()
 
