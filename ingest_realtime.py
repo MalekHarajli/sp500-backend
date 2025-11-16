@@ -1,15 +1,17 @@
 import time
 from polygon_client import PolygonClient
-from supabase_client import insert_many
+from supabase_client import SupabaseClient
 from calculate_index import compute_index
 from calculate_contributions import compute_contributions
 
 polygon = PolygonClient()
+db = SupabaseClient()
 
 def run_realtime():
     while True:
+        # Fetch snapshot data
         data = polygon.get_all_snapshots()
-        results = data if isinstance(data, list) else data.get("tickers", [])
+        results = data.get("tickers", []) if isinstance(data, dict) else []
 
         rows = []
 
@@ -31,11 +33,7 @@ def run_realtime():
             rows.append((sym, dt, price, None))
 
         if rows:
-            insert_many("""
-                INSERT INTO second_prices (symbol, ts, price, volume)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (symbol, ts) DO NOTHING
-            """, rows)
+            db.insert_second_prices(rows)
 
             compute_index()
             compute_contributions()
