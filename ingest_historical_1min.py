@@ -61,7 +61,8 @@ def run_historical_ingestion():
                     })
 
                 if rows:
-                    db.bulk_insert("minute_ohlcv", rows)
+                    # FIXED TABLE NAME
+                    db.bulk_insert("minute_ohlc", rows)
                     print(f"   ✅ Stored {len(rows)} rows")
 
             except Exception as e:
@@ -73,3 +74,4 @@ def run_historical_ingestion():
 
 if __name__ == "__main__":
     run_historical_ingestion()
+
