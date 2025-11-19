@@ -1,9 +1,9 @@
 """
-Historical OHLCV Ingestion (5 Years, 1-Minute, All S&P500 Stocks)
+Historical OHLC Ingestion (5 Years, 1-Minute, All S&P500 Stocks)
 Batching Mode: Year-by-Year (selected by user)
 
 Requires:
-- minute_ohlcv table
+- minute_ohlc table
 - SupabaseClient() class with bulk_insert()
 
 Run once on Render or locally, then disable.
@@ -18,7 +18,7 @@ from supabase_client import SupabaseClient
 # Number of years to pull
 YEARS_BACK = 5
 
-# Polygon 1-minute limit count per call
+# Polygon 1-minute candle params
 MULTIPLIER = 1
 TIMESPAN = "minute"
 
@@ -36,7 +36,7 @@ def generate_year_ranges():
 
 
 def fetch_and_store(symbol: str, db: SupabaseClient, polygon: PolygonClient):
-    """Ingest full OHLCV for a ticker year-by-year."""
+    """Ingest full OHLC for a ticker year-by-year."""
     print(f"\n📡 Fetching: {symbol}")
 
     year_ranges = generate_year_ranges()
@@ -66,15 +66,14 @@ def fetch_and_store(symbol: str, db: SupabaseClient, polygon: PolygonClient):
                 "high": candle["h"],
                 "low": candle["l"],
                 "close": candle["c"],
-                "volume": candle.get("v"),
-                "trade_count": candle.get("n"),  # may be None depending on plan
-                "vwap": candle.get("vw")         # may be None depending on plan
+                "volume": candle.get("v")
             })
 
-        db.bulk_insert("minute_ohlcv", rows)
+        # INSERT INTO minute_ohlc (the correct table name)
+        db.bulk_insert("minute_ohlc", rows)
         print(f"   ✅ Inserted {len(rows):,} rows")
 
-        # Delay to protect against rate limits
+        # Prevent Polygon rate limit
         time.sleep(0.6)
 
 
@@ -86,7 +85,7 @@ def run_ingestion():
     tickers = db.fetch_companies()
     tickers = [t["symbol"] for t in tickers]
 
-    print(f"📈 Tickers loaded: {len(tickers)}")
+    print(f"📈 Tickers loaded for ingestion: {len(tickers)} symbols")
 
     for symbol in tickers:
         fetch_and_store(symbol, db, polygon)
