@@ -74,4 +74,3 @@ def run_historical_ingestion():
 
 if __name__ == "__main__":
     run_historical_ingestion()
-
